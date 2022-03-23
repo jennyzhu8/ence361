@@ -349,8 +349,13 @@ main(void)
             OLEDStringDraw ("                ", 0, 0);
             OLEDStringDraw ("Accelerometer", 0, 0);
         }
-        /* change reference point and gravity calculations
-         *  according to new reference frame.*/
+
+        // When moving into new orientation, mean_x is constantly refreshing,
+        // ref_x is the most recent ref_x calculated using the most recent snapshot of mean_x.
+        // New reference frame is calculated by using original orientation, assuming z takes all of gravity.
+        mean_x = mean_x - ref_x + 0;
+        mean_y = mean_y - ref_y + 0;
+        mean_z = mean_z - ref_z + 256;
 
         // Change units of acceleration depending on up button press
         switch (upPushes) {
