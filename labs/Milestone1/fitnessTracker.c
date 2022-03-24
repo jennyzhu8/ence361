@@ -54,6 +54,18 @@ typedef struct{
 #define SYSTICK_RATE_HZ    10
 #define BUF_SIZE           10
 
+#define MAX_STR_LEN 32
+
+//---USB Serial comms: UART0, Rx:PA0 , Tx:PA1
+#define BAUD_RATE 9600
+#define UART_USB_BASE           UART0_BASE
+#define UART_USB_PERIPH_UART    SYSCTL_PERIPH_UART0
+#define UART_USB_PERIPH_GPIO    SYSCTL_PERIPH_GPIOA
+#define UART_USB_GPIO_BASE      GPIO_PORTA_BASE
+#define UART_USB_GPIO_PIN_RX    GPIO_PIN_0
+#define UART_USB_GPIO_PIN_TX    GPIO_PIN_1
+#define UART_USB_GPIO_PINS      UART_USB_GPIO_PIN_RX | UART_USB_GPIO_PIN_TX
+
 /**********************************************************
  * Global Variables
  **********************************************************/
@@ -63,6 +75,8 @@ static circBuf_t g_yAccBuffer;    // Buffer of size BUF_SIZE values of y acceler
 static circBuf_t g_zAccBuffer;    // Buffer of size BUF_SIZE values of z acceleration
 
 static uint32_t g_ulSampCnt;    // Counter for the interrupts
+
+char statusStr[MAX_STR_LEN + 1];
 
 /*******************************************
  * Local prototypes
@@ -76,7 +90,8 @@ void initSysTick (void);
 
 void displayUpdate (char *str1, char *str2, int16_t num, uint8_t charLine);
 vector3_t getAcclData (void);
-int16_t orientationCalc(int16_t opp, int16_t adj);
+int16_t rollCalc(int16_t g_y, int16_t g_z);
+int16_t pitchCalc(int16_t g_x, int16_t g_y, int16_t g_z);
 
 /***********************************************************
  * Interrupt handlers
@@ -202,6 +217,31 @@ initSysTick (void)
     SysTickEnable ();
 }
 
+//********************************************************
+// initialiseUSB_UART - 8 bits, 1 stop bit, no parity
+//********************************************************
+void
+initialiseUSB_UART (void)
+{
+    //
+    // Enable GPIO port A which is used for UART0 pins.
+    //
+    SysCtlPeripheralEnable(UART_USB_PERIPH_UART);
+    SysCtlPeripheralEnable(UART_USB_PERIPH_GPIO);
+    //
+    // Select the alternate (UART) function for these pins.
+    //
+    GPIOPinTypeUART(UART_USB_GPIO_BASE, UART_USB_GPIO_PINS);
+    GPIOPinConfigure (GPIO_PA0_U0RX);
+    GPIOPinConfigure (GPIO_PA1_U0TX);
+
+    UARTConfigSetExpClk(UART_USB_BASE, SysCtlClockGet(), BAUD_RATE,
+            UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE |
+            UART_CONFIG_PAR_NONE);
+    UARTFIFOEnable(UART_USB_BASE);
+    UARTEnable(UART_USB_BASE);
+}
+
 /***********************************************************
  * Action functions
  ***********************************************************
@@ -242,13 +282,38 @@ displayUpdate (char *str1, char *str2, int16_t num, uint8_t charLine)
 }
 
 /*********************************************************
- * Calculate orientation of board in degrees
+ * Calculate roll of board in milli-radians
  *********************************************************/
 int16_t
-orientationCalc(int16_t opp, int16_t adj)
+rollCalc(int16_t g_y, int16_t g_z)
 {
-    int16_t degree = atan2(opp, adj) * 180 / M_PI;
-    return degree;
+    int16_t roll = atan2(g_y, g_z) * 1000;
+    return roll;
+}
+
+/*********************************************************
+ * Calculate pitch of board in milli-radians
+ *********************************************************/
+int16_t
+pitchCalc(int16_t g_x, int16_t g_y, int16_t g_z)
+{
+    int16_t pitch = atan2((-g_x), sqrt(g_y * g_y + g_z * g_z)) * 1000;
+    return pitch;
+}
+
+//**********************************************************************
+// Transmit a string via UART0
+//**********************************************************************
+void
+UARTSend (char *pucBuffer)
+{
+    // Loop while there are more characters to send.
+    while(*pucBuffer)
+    {
+        // Write the next character to the UART Tx FIFO.
+        UARTCharPut(UART_USB_BASE, *pucBuffer);
+        pucBuffer++;
+    }
 }
 
 /*********************************************************
@@ -267,6 +332,9 @@ main(void)
     int32_t mean_y;
     int32_t mean_z;
 
+    int16_t current_roll;
+    int16_t current_pitch;
+
     uint8_t butState;
     int8_t upPushes = 0;
 
@@ -281,6 +349,8 @@ main(void)
     initCircBuf (&g_yAccBuffer, BUF_SIZE);
     initCircBuf (&g_zAccBuffer, BUF_SIZE);
 
+    initialiseUSB_UART ();
+
     // Enable interrupts to the processor.
     IntMasterEnable();
 
@@ -289,11 +359,14 @@ main(void)
     int32_t ref_x = ref_acc.x;
     int32_t ref_y = ref_acc.y;
     int32_t ref_z = ref_acc.z;
-    int16_t ref_roll = orientationCalc(ref_y, ref_z);
-    int16_t ref_pitch = orientationCalc(ref_x, ref_z);
+    int16_t ref_roll = rollCalc(ref_y, ref_z) * 180 / M_PI / 1000;
+    int16_t ref_pitch = pitchCalc(ref_x, ref_y, ref_z) * 180 / M_PI / 1000;
     OLEDStringDraw ("Reference", 0, 0);
     displayUpdate ("Roll ", "deg", ref_roll, 1);
     displayUpdate ("Pitch", "deg", ref_pitch, 2);
+    // Transmit data to the PC terminal
+    usprintf (statusStr, "roll = %4d | pitch = %4d \r\n", ref_roll, ref_pitch);
+    UARTSend (statusStr);
 
     // Wait approximately 3 seconds
     SysCtlDelay (SysCtlClockGet ());
@@ -318,6 +391,10 @@ main(void)
         mean_y = (2 * sum_y + BUF_SIZE) / 2 / BUF_SIZE;
         mean_z = (2 * sum_z + BUF_SIZE) / 2 / BUF_SIZE;
 
+        // Calculate the current roll and pitch
+        current_roll = rollCalc(mean_y, mean_z) * 180 / M_PI / 1000;
+        current_pitch = pitchCalc(mean_x, mean_y, mean_z) * 180 / M_PI / 1000;
+
         // Poll button(s)
         updateButtons ();
 
@@ -336,13 +413,16 @@ main(void)
             ref_x = mean_x;
             ref_y = mean_y;
             ref_z = mean_z;
-            ref_roll = orientationCalc(ref_y, ref_z);
-            ref_pitch = orientationCalc(ref_x, ref_z);
+            ref_roll = current_roll;
+            ref_pitch = current_pitch;
             OLEDStringDraw ("                ", 0, 0);
             OLEDStringDraw ("Reference", 0, 0);
             displayUpdate ("Roll ", "deg", ref_roll, 1);
             displayUpdate ("Pitch", "deg", ref_pitch, 2);
             OLEDStringDraw ("                ", 0, 3);
+            // Transmit data to the PC terminal
+            usprintf (statusStr, "roll = %4d | pitch = %4d \r\n", ref_roll, ref_pitch);
+            UARTSend (statusStr);
 
             SysCtlDelay (SysCtlClockGet ());
 
@@ -350,21 +430,21 @@ main(void)
             OLEDStringDraw ("Accelerometer", 0, 0);
         }
 
-        // When moving into new orientation, mean_x is constantly refreshing,
-        // ref_x is the most recent ref_x calculated using the most recent snapshot of mean_x.
-        // New reference frame is calculated by using original orientation, assuming z takes all of gravity.
-        mean_x = mean_x - ref_x + 0;
-        mean_y = mean_y - ref_y + 0;
-        mean_z = mean_z - ref_z + 256;
+        // Orientation calculations [DO SOMETHING SIMILAR FOR X AND Y AXES]
+        if (mean_z < ref_z) {                   // raw value of z has decreased
+            mean_z = 256 + mean_z - ref_z;      // corresponding negative shift
+        } else if (mean_z > ref_z) {            // raw value of z has increased
+            mean_z = 256 + ref_z - mean_z;      // corresponding negative shift
+        }
 
         // Change units of acceleration depending on up button press
         switch (upPushes) {
-        case 1:
-            mean_x = (mean_x + 128) / 256;
-            mean_y = (mean_y + 128) / 256;
-            mean_z = (mean_z + 128) / 256;
+        case 1: // milli-g
+            mean_x = 1000 * mean_x / 256;
+            mean_y = 1000 * mean_y / 256;
+            mean_z = 1000 * mean_z / 256;
             break;
-        case 2:
+        case 2: // ms-2
             mean_x = mean_x * 981 / 25600;
             mean_y = mean_y * 981 / 25600;
             mean_z = mean_z * 981 / 25600;
@@ -375,6 +455,10 @@ main(void)
         displayUpdate ("Accl", "X", mean_x, 1);
         displayUpdate ("Accl", "Y", mean_y, 2);
         displayUpdate ("Accl", "Z", mean_z, 3);
+
+        // Transmit data to the PC terminal
+        usprintf (statusStr, "x = %4d | y = %4d | z = %4d \r\n", mean_x, mean_y, mean_z);
+        UARTSend (statusStr);
 
         // Delay for a period such that this loop runs at approximately 2Hz
         SysCtlDelay (SysCtlClockGet () / 6);
