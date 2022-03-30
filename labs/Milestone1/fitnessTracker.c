@@ -430,12 +430,12 @@ main(void)
             OLEDStringDraw ("Accelerometer", 0, 0);
         }
 
-        // Orientation calculations [DO SOMETHING SIMILAR FOR X AND Y AXES]
+        /* // Orientation calculations [IRRELEVANT]
         if (mean_z < ref_z) {                   // raw value of z has decreased
             mean_z = 256 + mean_z - ref_z;      // corresponding negative shift
         } else if (mean_z > ref_z) {            // raw value of z has increased
             mean_z = 256 + ref_z - mean_z;      // corresponding negative shift
-        }
+        } */
 
         // Change units of acceleration depending on up button press
         switch (upPushes) {
