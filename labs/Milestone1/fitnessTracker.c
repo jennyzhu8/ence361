@@ -74,7 +74,7 @@ static circBuf_t g_xAccBuffer;    // Buffer of size BUF_SIZE values of x acceler
 static circBuf_t g_yAccBuffer;    // Buffer of size BUF_SIZE values of y acceleration
 static circBuf_t g_zAccBuffer;    // Buffer of size BUF_SIZE values of z acceleration
 
-static uint32_t g_ulSampCnt;    // Counter for the interrupts
+// static uint32_t g_ulSampCnt;    // Counter for the interrupts
 
 char statusStr[MAX_STR_LEN + 1];
 
@@ -108,7 +108,9 @@ SysTickIntHandler(void)
     writeCircBuf (&g_yAccBuffer, acceleration_raw.y);
     writeCircBuf (&g_zAccBuffer, acceleration_raw.z);
 
-    g_ulSampCnt++;    // Increment the sampler counter
+    // Poll button(s)
+    updateButtons ();
+    // g_ulSampCnt++;    // Increment the sampler counter
 }
 
 /***********************************************************
@@ -395,8 +397,9 @@ main(void)
         current_roll = rollCalc(mean_y, mean_z) * 180 / M_PI / 1000;
         current_pitch = pitchCalc(mean_x, mean_y, mean_z) * 180 / M_PI / 1000;
 
-        // Poll button(s)
+        /* // Poll button(s) [we had this here but moved it to SysTick]
         updateButtons ();
+        */
 
         // Check up button and increment counter if pushed
         butState = checkButton (UP);
@@ -437,24 +440,35 @@ main(void)
             mean_z = 256 + ref_z - mean_z;      // corresponding negative shift
         } */
 
-        // Change units of acceleration depending on up button press
+        // Change units of acceleration depending on up button press, and display
         switch (upPushes) {
+
+        case 0: // raw data
+            displayUpdate ("Accl raw", "X", mean_x, 1);
+            displayUpdate ("Accl raw", "Y", mean_y, 2);
+            displayUpdate ("Accl raw", "Z", mean_z, 3);
+            break;
+
         case 1: // milli-g
             mean_x = 1000 * mean_x / 256;
             mean_y = 1000 * mean_y / 256;
             mean_z = 1000 * mean_z / 256;
+
+            displayUpdate ("Accl mg", "X", mean_x, 1);
+            displayUpdate ("Accl mg", "Y", mean_y, 2);
+            displayUpdate ("Accl mg", "Z", mean_z, 3);
             break;
+
         case 2: // ms-2
             mean_x = mean_x * 981 / 25600;
             mean_y = mean_y * 981 / 25600;
             mean_z = mean_z * 981 / 25600;
+
+            displayUpdate ("Accl ms-2", "X", mean_x, 1);
+            displayUpdate ("Accl ms-2", "Y", mean_y, 2);
+            displayUpdate ("Accl ms-2", "Z", mean_z, 3);
             break;
         }
-
-        // Display mean acceleration values
-        displayUpdate ("Accl", "X", mean_x, 1);
-        displayUpdate ("Accl", "Y", mean_y, 2);
-        displayUpdate ("Accl", "Z", mean_z, 3);
 
         // Transmit data to the PC terminal
         usprintf (statusStr, "x = %4d | y = %4d | z = %4d \r\n", mean_x, mean_y, mean_z);
