@@ -622,7 +622,6 @@ buttonTask(void)
 
     butStateDown = checkButton(DOWN);
 
-    buttonHoldTime = 0;
     if (butStateDown == PUSHED) {
         downButtonHold = 1;
         if (displayState == 2) {
@@ -634,6 +633,12 @@ buttonTask(void)
         buttonHoldTime++;
     }
     else {
+        buttonHoldTime = 0;
+        downButtonHold = 0;
+    }
+
+    if (buttonHoldTime >= 125) {
+        stepCount = 0;
         buttonHoldTime = 0;
         downButtonHold = 0;
     }
