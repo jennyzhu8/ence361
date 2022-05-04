@@ -53,6 +53,7 @@ typedef struct{
 
 #define MAX_STR_LEN         32
 #define BUF_SIZE            10
+#define NUM_SW_POLLS        3
 
 #define SYSTICK_RATE_HZ     25  // 25Hz results in 40ms resolution timer counter
 #define DISPLAY_PERIOD      5   // 200ms period = 5Hz
@@ -68,6 +69,19 @@ typedef struct{
 #define UART_USB_GPIO_PIN_RX    GPIO_PIN_0
 #define UART_USB_GPIO_PIN_TX    GPIO_PIN_1
 #define UART_USB_GPIO_PINS      UART_USB_GPIO_PIN_RX | UART_USB_GPIO_PIN_TX
+
+// Switch 1
+#define SW1_PERIPH SYSCTL_PERIPH_GPIOA
+#define SW1_PORT_BASE GPIO_PORTA_BASE
+#define SW1_PIN GPIO_PIN_7
+#define SW1_NORMAL false
+
+// Switch 2
+#define SW2_PERIPH SYSCTL_PERIPH_GPIOA
+#define SW2_PORT_BASE GPIO_PORTA_BASE
+#define SW2_PIN GPIO_PIN_6
+#define SW2_NORMAL false
+
 
 /**********************************************************
  * Global Variables
@@ -96,8 +110,15 @@ static bool stepCountUnitToggle;
 static bool distTravelUnitToggle;
 static bool downButtonHold;
 
+// Switches
+enum swNames {SW_LEFT = 0, SW_RIGHT, NUM_SW};
+enum swStates {SW_DOWN = 0, SW_UP};
+static bool sw_state[NUM_SW];
+static bool sw_normal[NUM_SW];
+static uint8_t sw_count[NUM_SW];
+
 // Step values
-static uint16_t stepCount;
+static int32_t stepCount;
 static uint16_t stepGoal;
 static int32_t goalBufferVal;
 
@@ -105,16 +126,33 @@ static int32_t goalBufferVal;
  * Local prototypes
  *******************************************/
 void SysTickIntHandler(void);
+void ADCIntHandler(void);
 
 void initClock (void);
 void initDisplay (void);
 void initAccl (void);
+void initSwitch (void);
 void initSysTick (void);
+void initialiseUSB_UART (void);
+void initADC (void);
 
 void displayUpdate (char *str1, char *str2, int16_t num, uint8_t charLine);
 vector3_t getAcclData (void);
 int16_t rollCalc(int16_t g_y, int16_t g_z);
 int16_t pitchCalc(int16_t g_x, int16_t g_y, int16_t g_z);
+void UARTSend (char *pucBuffer);
+void updateSwitches (void);
+bool checkSwitch (uint8_t swName);
+void displayDistKM(int32_t stepCount);
+void displayDistMile(int32_t stepCount);
+int32_t getGoalValue(void);
+void displayPercentGoal(int32_t stepCount, uint16_t stepGoal);
+void displaySteps(int32_t stepCount);
+void displayCurrentGoal(uint16_t stepGoal);
+void displayNewGoal(int32_t goalBufferVal);
+uint32_t getSysTime(void);
+void displayTask(void);
+void buttonTask(void);
 
 /***********************************************************
  * Interrupt handlers
@@ -131,8 +169,9 @@ SysTickIntHandler(void)
     writeCircBuf (&g_yAccBuffer, acceleration_raw.y);
     writeCircBuf (&g_zAccBuffer, acceleration_raw.z);
 
-    // Poll button(s)
-    updateButtons ();
+    // Poll button(s) and switch(es)
+    updateButtons();
+    updateSwitches();
 
     // Increment timer
     g_timerCount++;
@@ -246,6 +285,30 @@ initAccl (void)
     toAccl[0] = ACCL_OFFSET_Z;
     toAccl[1] = 0x00;
     I2CGenTransmit(toAccl, 1, WRITE, ACCL_ADDR);
+}
+
+/*********************************************************
+ * Initialise test switch SW1
+ *********************************************************/
+void
+initSwitch (void)
+{
+    SysCtlPeripheralEnable(SW1_PERIPH);
+    GPIOPinTypeGPIOInput (SW1_PORT_BASE, SW1_PIN);
+    GPIOPadConfigSet (SW1_PORT_BASE, SW1_PIN, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD_WPD);
+    sw_normal[SW_RIGHT] = SW1_NORMAL;
+
+    SysCtlPeripheralEnable(SW2_PERIPH);
+    GPIOPinTypeGPIOInput (SW2_PORT_BASE, SW2_PIN);
+    GPIOPadConfigSet (SW2_PORT_BASE, SW2_PIN, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD_WPD);
+    sw_normal[SW_LEFT] = SW2_NORMAL;
+
+    int i;
+
+    for (i = 0; i < NUM_SW; i++) {
+        sw_state[i] = sw_normal[i];
+        sw_count[i] = 0;
+    }
 }
 
 /*********************************************************
@@ -397,19 +460,60 @@ UARTSend (char *pucBuffer)
     }
 }
 
+
+/*********************************************************
+ * Update the switches
+ *********************************************************/
+void
+updateSwitches (void)
+{
+    bool sw_value[NUM_SW];
+    int i;
+
+    sw_value[SW_LEFT] = (GPIOPinRead (SW2_PORT_BASE, SW2_PIN) == SW2_PIN);
+    sw_value[SW_RIGHT] = (GPIOPinRead (SW1_PORT_BASE, SW1_PIN) == SW1_PIN);
+
+    for (i = 0; i < NUM_SW; i++) {
+        if (sw_value[i] != sw_state[i]) {
+            sw_count[i]++;
+            if (sw_count[i] >= NUM_SW_POLLS) {
+                sw_state[i] = sw_value[i];
+                sw_count[i] = 0;
+            }
+        }
+        else {
+            sw_count[i] = 0;
+        }
+    }
+}
+
+/*********************************************************
+ * Check designated switch and return its state
+ *********************************************************/
+bool
+checkSwitch (uint8_t swName)
+{
+    if (sw_state[swName] == sw_normal[swName]) {
+        return SW_DOWN;
+    }
+    else {
+        return SW_UP;
+    }
+}
+
 /*********************************************************
  * Convert a distance into a km string and display it
  *********************************************************/
 void
-displayDistKM(uint16_t stepCount)
+displayDistKM(int32_t stepCount)
 {
     char string[17];
-    int16_t distanceCM = stepCount * 90;
-    int16_t distanceKMD0 = distanceCM / 100000;
-    int16_t distanceKMM0 = distanceCM % 100000;
-    int16_t distanceKMD1 = distanceKMM0 / 10000;
-    int16_t distanceKMM1 = distanceKMM0 % 10000;
-    int16_t distanceKMD2 = distanceKMM1 / 1000;
+    int32_t distanceCM = stepCount * 90;
+    int32_t distanceKMD0 = distanceCM / 100000;
+    int32_t distanceKMM0 = distanceCM % 100000;
+    int32_t distanceKMD1 = distanceKMM0 / 10000;
+    int32_t distanceKMM1 = distanceKMM0 % 10000;
+    int32_t distanceKMD2 = distanceKMM1 / 1000;
     usnprintf(string, sizeof(string), "%d.%d%d km", distanceKMD0, distanceKMD1, distanceKMD2);
     OLEDStringDraw (string, 0, 1);
 }
@@ -418,7 +522,7 @@ displayDistKM(uint16_t stepCount)
  * Returns the average value in the goal buffer
  *********************************************************/
 int32_t
-getGoalValue()
+getGoalValue(void)
 {
     uint16_t i;
     int32_t sum = 0;
@@ -434,15 +538,15 @@ getGoalValue()
  * Convert a distance into a mile string and display it
  *********************************************************/
 void
-displayDistMile(uint16_t stepCount)
+displayDistMile(int32_t stepCount)
 {
     char string[17];
-    int16_t distanceCM = stepCount * 90;
-    int16_t distanceMD0 = distanceCM / 160934;
-    int16_t distanceMM0 = distanceCM % 160934;
-    int16_t distanceMD1 = distanceMM0 / 16093;
-    int16_t distanceMM1 = distanceMM0 % 16093;
-    int16_t distanceMD2 = distanceMM1 / 1609;
+    int32_t distanceCM = stepCount * 90;
+    int32_t distanceMD0 = distanceCM / 160934;
+    int32_t distanceMM0 = distanceCM % 160934;
+    int32_t distanceMD1 = distanceMM0 / 16093;
+    int32_t distanceMM1 = distanceMM0 % 16093;
+    int32_t distanceMD2 = distanceMM1 / 1609;
     usnprintf(string, sizeof(string), "%d.%d%d miles", distanceMD0, distanceMD1, distanceMD2);
     OLEDStringDraw (string, 0, 1);
 }
@@ -451,12 +555,12 @@ displayDistMile(uint16_t stepCount)
  * Convert steps to a percentage of steps goal
  *********************************************************/
 void
-displayPercentGoal(uint16_t stepCount, uint16_t stepGoal)
+displayPercentGoal(int32_t stepCount, uint16_t stepGoal)
 {
     char string[17];
 
-    uint16_t wholeNum = 100 * stepCount / stepGoal;
-    uint16_t decimal = (100 * stepCount % stepGoal) / (stepGoal/10);
+    int32_t wholeNum = 100 * stepCount / stepGoal;
+    int32_t decimal = (100 * stepCount % stepGoal) / (stepGoal/10);
 
     usnprintf(string, sizeof(string), "%d.%d%% of goal", wholeNum, decimal);
     OLEDStringDraw (string, 0, 1);
@@ -466,7 +570,7 @@ displayPercentGoal(uint16_t stepCount, uint16_t stepGoal)
  * Display step count
  *********************************************************/
 void
-displaySteps(uint16_t stepCount)
+displaySteps(int32_t stepCount)
 {
     char string[17];
 
@@ -586,18 +690,18 @@ displayTask(void)
 void
 buttonTask(void)
 {
-    // Adjusting the display state with left and right button presses
-
     butStateLeft = checkButton(LEFT);
     butStateRight = checkButton(RIGHT);
+    butStateUp = checkButton(UP);
+    butStateDown = checkButton(DOWN);
 
+    // Adjusting the display state with left and right button presses
     if (butStateLeft == PUSHED) {
         displayState++;
         if (displayState > 2) {
             displayState = 0;
         }
     }
-
     if (butStateRight == PUSHED) {
         displayState--;
         if (displayState < 0) {
@@ -605,31 +709,38 @@ buttonTask(void)
         }
     }
 
-    // Adjusting units with up button presses depending on the display state
-
-    butStateUp = checkButton(UP);
-
+    // Up button press operations
     if (butStateUp == PUSHED) {
-        if (displayState == 0) {
-            stepCountUnitToggle = !stepCountUnitToggle;
+        if (checkSwitch(SW_RIGHT) == SW_UP) {   // test state, should increment
+            stepCount = stepCount + 100;
         }
-        else if (displayState == 1) {
-            distTravelUnitToggle = !distTravelUnitToggle;
+        else {                                  // normal state, should toggle units
+            if (displayState == 0) {
+                stepCountUnitToggle = !stepCountUnitToggle;
+            }
+            else if (displayState == 1) {
+                distTravelUnitToggle = !distTravelUnitToggle;
+            }
         }
     }
 
     // Down button press operations
-
-    butStateDown = checkButton(DOWN);
-
     if (butStateDown == PUSHED) {
-        downButtonHold = 1;
-        if (displayState == 2) {
-            stepGoal = goalBufferVal; //Setting the new goal
-            displayState = 0;
+        if (checkSwitch(SW_RIGHT) == SW_UP) {
+            stepCount = stepCount - 500;
+            if (stepCount < 0) {
+                stepCount = 0;
+            }
+        }
+        else {
+            downButtonHold = 1;
+            if (displayState == 2) {
+                stepGoal = goalBufferVal;
+                displayState = 0;
+            }
         }
     }
-    else if (downButtonHold && (butStateDown == NO_CHANGE)) {
+    else if ((butStateDown == NO_CHANGE) && downButtonHold && (checkSwitch(SW_RIGHT) == SW_DOWN) && (displayState != 2)) {
         buttonHoldTime++;
     }
     else {
@@ -637,6 +748,7 @@ buttonTask(void)
         downButtonHold = 0;
     }
 
+    // Down button hold - dedicated code
     if (buttonHoldTime >= 125) {
         stepCount = 0;
         buttonHoldTime = 0;
@@ -657,6 +769,7 @@ main(void)
     initSysTick ();
     initButtons ();
     initADC();
+    initSwitch();
 
     // Initialise circular buffer
     initCircBuf (&g_goalBuffer, BUF_SIZE);
@@ -669,16 +782,15 @@ main(void)
     stepCountUnitToggle = 0;
     distTravelUnitToggle = 0;
 
-
-    // Initialise values
-    stepCount = 15;
-    stepGoal = 1000;
-
     // Initialise task timers
     uint32_t displayTaskTimer = 0;
     uint32_t buttonTaskTimer = 0;
     uint32_t adcTaskTimer = 0;
     uint32_t currentTime;
+
+    // Arbitrarily chosen initial values
+    stepCount = 10;
+    stepGoal = 1000;
 
     // Enable interrupts to the processor.
     IntMasterEnable();
