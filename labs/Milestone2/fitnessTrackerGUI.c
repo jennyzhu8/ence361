@@ -55,10 +55,10 @@ typedef struct{
 #define BUF_SIZE            10
 #define NUM_SW_POLLS        3
 
-#define SYSTICK_RATE_HZ     25  // 25Hz results in 40ms resolution timer counter
-#define DISPLAY_PERIOD      5   // 200ms period = 5Hz
-#define BUTTON_PERIOD       1   // 40ms period = 25Hz
-#define ADC_PERIOD          2   // 80ms period = 12.5Hz
+#define SYSTICK_RATE_HZ     100  // 100Hz results in 10ms resolution timer counter
+#define DISPLAY_PERIOD      5   // 50ms period = 2Hz
+#define BUTTON_PERIOD       1   // 10ms period = 10Hz
+#define ADC_PERIOD          2   // 20ms period = 5Hz
 
 //---USB Serial comms: UART0, Rx:PA0 , Tx:PA1
 #define BAUD_RATE 9600
@@ -530,7 +530,7 @@ getGoalValue(void)
         sum = sum + readCircBuf (&g_goalBuffer);
     }
     int32_t mean = (2 * sum + BUF_SIZE) / 2 / BUF_SIZE;
-    int32_t value = mean * 10000 / 4095 / 100;
+    int32_t value = mean * 15000 / 4095 / 100;
     return (value*100);
 }
 
@@ -667,16 +667,16 @@ displayTask(void)
     }
 
     // long hold indicator bar
-    if (buttonHoldTime >= 100) {
+    if (buttonHoldTime >= 200) {
         OLEDStringDraw(":-) :-) :-) :-) ", 0, 3);
     }
-    else if (buttonHoldTime >= 75) {
+    else if (buttonHoldTime >= 150) {
         OLEDStringDraw(":-) :-) :-)     ", 0, 3);
     }
-    else if (buttonHoldTime >= 50) {
+    else if (buttonHoldTime >= 100) {
         OLEDStringDraw(":-) :-)         ", 0, 3);
     }
-    else if (buttonHoldTime >= 25) {
+    else if (buttonHoldTime >= 50) {
         OLEDStringDraw(":-)             ", 0, 3);
     }
     else {
@@ -749,7 +749,7 @@ buttonTask(void)
     }
 
     // Down button hold - dedicated code
-    if (buttonHoldTime >= 125) {
+    if (buttonHoldTime >= 200) {
         stepCount = 0;
         buttonHoldTime = 0;
         downButtonHold = 0;
