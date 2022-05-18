@@ -881,10 +881,10 @@ main(void)
     uint32_t currentTime;
 
     // Other initial values
-    stepCount = 0;
+    stepCount = -1;
     stepGoal = 1000;
     accAvg = 0;
-    accThresh = 150;
+    accThresh = 50;
     vector3_t ref_acc = getAcclData();
     accRef_x = ref_acc.x;
     accRef_y = ref_acc.y;
